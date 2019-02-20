@@ -13,6 +13,7 @@ from bs4 import BeautifulSoup
 URL='https://www.sc2links.com/vods/'
 SEPARATOR='+---------+'
 CACHE_DIR=os.path.join(os.getenv('HOME'), '.cache', 'sc2links')
+LAST_FILE='last'
 
 def year(string):
     m, d, y = string.split()
@@ -138,7 +139,7 @@ def cache(filename, data):
         print('[!] Error writing to cache')
 
 
-def load(url):
+def load(url, set_last_seen=False):
     filename = hashlib.md5(url.encode()).hexdigest()
 
     content = load_cache(filename)
@@ -149,11 +150,14 @@ def load(url):
         cache(filename, content)
         return content
 
+    if set_last_seen:
+        last_seen_file = os.path.join(CACHE_DIR, LAST_FILE)
+        with open(last_seen_file, 'w') as f:
+            f.write(filename)
+
     return content
 
-def main():
-    if not os.path.exists(CACHE_DIR):
-        os.makedirs(CACHE_DIR)
+def browser():
     content = load(URL)
 
     data = filter_tournaments(content)
@@ -161,18 +165,58 @@ def main():
     year = get_year(data)
 
     data = sorted(data[str(year)])
-    match = get_tournament(data, year)
+    tournament = get_tournament(data, year)
 
-    content = load(match[1])
+    content = load(tournament[1], True)
     data = filter_rounds(content)[1:]
 
     round_tag = get_round(data)
-    data = filter_matches(round_tag)
+    data = sorted(filter_matches(round_tag))
 
     match = get_match(data)
 
     content = load(match[1])
-    open_mpv(content)
+    return content
+
+def last_tournament():
+    filepath = os.path.join(CACHE_DIR, LAST_FILE)
+    with open(filepath, 'r') as f:
+        last_seen_filename = f.read().strip()
+
+    last_seen_path = os.path.join(CACHE_DIR, last_seen_filename)
+    with open(last_seen_path, 'r') as f:
+        content = f.read()
+
+    data = filter_rounds(content)[1:]
+
+    round_tag = get_round(data)
+    data = sorted(filter_matches(round_tag))
+
+    match = get_match(data)
+
+    content = load(match[1])
+    return content
+
+    exit()
+
+def main_menu():
+    options = {
+            'last tournament': last_tournament,
+            'browser': browser
+        }
+    selected = ask(options)
+
+    return options[list(options.keys())[selected]]
+
+
+def main():
+    if not os.path.exists(CACHE_DIR):
+        os.makedirs(CACHE_DIR)
+
+    options_function = main_menu()
+    video_url = options_function()
+
+    open_mpv(video_url)
 
 if __name__ == '__main__':
     main()
