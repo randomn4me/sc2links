@@ -22,11 +22,11 @@ def year(string):
 
 def ask(aloi):
     for i, item in enumerate(aloi):
-        print(f'|-{i}> {item}')
+        print(f'|-{i+1}> {item}')
     print(SEPARATOR)
 
     answer = -1
-    while answer not in list(range(len(aloi))):
+    while answer not in list(range(1, len(aloi)+1)) + ['q']:
         answer = input('| which one? > ')
         print(SEPARATOR)
         try:
@@ -34,7 +34,10 @@ def ask(aloi):
         except:
             pass
 
-    return answer
+    if answer == 'q':
+        exit()
+
+    return answer - 1
 
 
 def filter_tournaments(content):
@@ -177,6 +180,26 @@ def browser():
 
     content = load(match[1])
     return content
+
+# def browser():
+#     content = load(URL)
+#     decisions = [] # [year, tournament, round, match]
+# 
+#     data = None
+#     while len(decisions) == 0 or decisions[-1] != 'q':
+#         # decide year
+#         if len(decisions) == 0:
+#             data = filter_tournaments(content)
+#             year = list(data.keys())[ask(data.keys())]
+#             decisions.add(year)
+#         # decide tournament
+#         elif len(decisions) == 1:
+#             data = sorted(data[str(year)])
+#             tournament = data[ask([m for m, l in data])]
+#             decisions.add(tournament)
+#         # decide get round_tag
+#         elif len(decisions) == 2:
+
 
 def last_tournament():
     filepath = os.path.join(CACHE_DIR, LAST_FILE)
