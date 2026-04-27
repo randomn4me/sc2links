@@ -1,43 +1,55 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
-import urllib.request
-import operator
-import subprocess
-import os
-import hashlib
 import datetime
-
+import hashlib
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
 from collections import defaultdict
+from pathlib import Path
+
 from bs4 import BeautifulSoup
 
-URL='https://www.sc2links.com/vods/'
-SEPARATOR='+---------+'
-CACHE_DIR=os.path.join(os.getenv('HOME'), '.cache', 'sc2links')
-LAST_FILE='last'
+URL = 'https://www.sc2links.com/vods/'
+SEPARATOR = '+---------+'
+CACHE_DIR = Path.home() / '.cache' / 'sc2links'
+LAST_FILE = 'last'
+USER_AGENT = (
+    'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) '
+    'Gecko/20100101 Firefox/128.0'
+)
+REQUEST_TIMEOUT = 15
+
 
 def year(string):
-    m, d, y = string.split()
-    return y
+    parts = string.split()
+    if len(parts) < 3:
+        raise ValueError(f'unexpected date format: {string!r}')
+    return parts[-1]
 
 
 def ask(aloi):
-    for i, item in enumerate(aloi):
+    items = list(aloi)
+    for i, item in enumerate(items):
         print(f'|-{i+1}> {item}')
     print(SEPARATOR)
 
-    answer = -1
-    while answer not in list(range(1, len(aloi)+1)) + ['q']:
-        answer = input('| which one? > ')
+    valid = set(range(1, len(items) + 1))
+    while True:
+        raw = input('| which one? > ').strip()
         print(SEPARATOR)
+        if raw == 'q':
+            sys.exit()
         try:
-            answer = int(answer)
-        except:
-            pass
-
-    if answer == 'q':
-        exit()
-
-    return answer - 1
+            choice = int(raw)
+        except ValueError:
+            print('| please enter a number or "q" to quit')
+            continue
+        if choice in valid:
+            return choice - 1
+        print(f'| pick a number between 1 and {len(items)}')
 
 
 def filter_tournaments(content):
@@ -45,34 +57,33 @@ def filter_tournaments(content):
     vodlinks = soup.find_all('div', ['vodlink'])
     voddates = soup.find_all('div', ['voddate'])
 
-    all_vods = zip(vodlinks, voddates)
+    if not vodlinks or not voddates:
+        raise RuntimeError(
+            'no tournaments found — sc2links.com layout may have changed'
+        )
 
     by_year = defaultdict(list)
-
-    for l, d in all_vods:
-        name = l.text
-        link = l.a['href']
-        y = year(d.text)
-
-        entry = (name, link)
-
-        by_year[y].append(entry)
+    for l, d in zip(vodlinks, voddates):
+        a = l.find('a')
+        if a is None or not a.get('href'):
+            continue
+        by_year[year(d.text)].append((l.text, a['href']))
 
     return by_year
 
 
 def get_year(data):
-    return list(data.keys())[ask(data.keys())]
+    years = list(data.keys())
+    return years[ask(years)]
 
 
-def get_tournament(data, year):
-    return data[ask([m for m, l in data])]
+def get_tournament(data):
+    return data[ask([m for m, _ in data])]
 
 
 def filter_rounds(content):
     soup = BeautifulSoup(content, 'html.parser')
-    matches = soup.find_all('h3')
-    return matches
+    return soup.find_all('h3')
 
 
 def get_round(data):
@@ -80,166 +91,163 @@ def get_round(data):
 
 
 def filter_matches(round_tag):
-    match_tag = round_tag.next_sibling
-    matches = list()
-    while match_tag and match_tag.name == 'h5':
-        matches.append(match_tag)
-        match_tag = match_tag.next_sibling
+    matches = []
+    for sibling in round_tag.next_siblings:
+        name = getattr(sibling, 'name', None)
+        if name is None:
+            continue
+        if name != 'h5':
+            break
+        matches.append(sibling)
 
-    data = list()
+    data = []
     for m in matches:
-        a_tag = m.find_next('a')
+        a_tag = m.find('a') or m.find_next('a')
+        if a_tag is None or not a_tag.get('href'):
+            continue
         data.append((a_tag.text, a_tag['href']))
-
     return data
 
 
 def get_match(data):
-    return data[ask([m for m, l in data])]
+    return data[ask([m for m, _ in data])]
 
 
 def open_mpv(content):
     soup = BeautifulSoup(content, 'html.parser')
-    iframe = soup.find_all('iframe')
-    url = iframe[0]['src']
+    iframes = soup.find_all('iframe')
+    if not iframes:
+        print('| no video iframe found on this page')
+        print(SEPARATOR)
+        return
+
+    url = iframes[0].get('src')
+    if not url:
+        print('| iframe has no src')
+        print(SEPARATOR)
+        return
 
     if 'youtu.be' in url or 'youtube' in url:
-        subprocess.call(['mpv', iframe[0]['src']])
+        subprocess.call(['mpv', url])
     else:
-        print('| sorry, can\'t play')
+        print(f'| sorry, can\'t play: {url}')
         print(SEPARATOR)
 
 
 def up_to_date_file(filepath):
     today = datetime.date.today()
-    modification_time = os.path.getmtime(filepath)
-    file_date = datetime.date.fromtimestamp(modification_time)
-
+    file_date = datetime.date.fromtimestamp(os.path.getmtime(filepath))
     return file_date == today
 
 
 def load_cache(filename):
-    cached_files = os.listdir(CACHE_DIR)
-
-    if filename in cached_files:
-        filepath = os.path.join(CACHE_DIR, filename)
-        if not up_to_date_file(filepath):
-            return
-
-        with open(filepath, 'r') as f:
-            content = f.read()
-        return content
-
-    return
+    filepath = CACHE_DIR / filename
+    if not filepath.exists() or not up_to_date_file(filepath):
+        return None
+    return filepath.read_text()
 
 
 def cache(filename, data):
-    filepath = os.path.join(CACHE_DIR, filename)
+    filepath = CACHE_DIR / filename
     try:
-        with open(filepath, 'w') as f:
-            f.write(data.decode())
-    except:
-        print('[!] Error writing to cache')
+        filepath.write_text(data.decode())
+    except OSError as e:
+        print(f'[!] error writing cache: {e}')
+
+
+def write_last_seen(filename):
+    (CACHE_DIR / LAST_FILE).write_text(filename)
 
 
 def load(url, set_last_seen=False):
     filename = hashlib.md5(url.encode()).hexdigest()
 
     content = load_cache(filename)
-    if not content:
-        print("""| loading |
-+---------+ """)
-        content = urllib.request.urlopen(url).read()
-        cache(filename, content)
-        return content
+    if content is None:
+        print('| loading |')
+        print(SEPARATOR)
+        request = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
+        try:
+            raw = urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT).read()
+        except urllib.error.HTTPError as e:
+            raise SystemExit(f'[!] HTTP {e.code} fetching {url}')
+        except urllib.error.URLError as e:
+            raise SystemExit(f'[!] network error fetching {url}: {e.reason}')
+        cache(filename, raw)
+        content = raw.decode()
 
     if set_last_seen:
-        last_seen_file = os.path.join(CACHE_DIR, LAST_FILE)
-        with open(last_seen_file, 'w') as f:
-            f.write(filename)
+        write_last_seen(filename)
 
     return content
+
 
 def browser():
     content = load(URL)
-
     data = filter_tournaments(content)
 
-    year = get_year(data)
+    chosen_year = get_year(data)
+    tournaments = sorted(data[chosen_year])
+    tournament = get_tournament(tournaments)
 
-    data = sorted(data[str(year)])
-    tournament = get_tournament(data, year)
+    content = load(tournament[1], set_last_seen=True)
+    rounds = filter_rounds(content)[1:]
+    if not rounds:
+        raise RuntimeError(
+            'no rounds found — sc2links.com layout may have changed'
+        )
 
-    content = load(tournament[1], True)
-    data = filter_rounds(content)[1:]
+    round_tag = get_round(rounds)
+    matches = sorted(filter_matches(round_tag))
+    if not matches:
+        raise RuntimeError('no matches found in selected round')
 
-    round_tag = get_round(data)
-    data = sorted(filter_matches(round_tag))
-
-    match = get_match(data)
-
-    content = load(match[1])
-    return content
-
-# def browser():
-#     content = load(URL)
-#     decisions = [] # [year, tournament, round, match]
-# 
-#     data = None
-#     while len(decisions) == 0 or decisions[-1] != 'q':
-#         # decide year
-#         if len(decisions) == 0:
-#             data = filter_tournaments(content)
-#             year = list(data.keys())[ask(data.keys())]
-#             decisions.add(year)
-#         # decide tournament
-#         elif len(decisions) == 1:
-#             data = sorted(data[str(year)])
-#             tournament = data[ask([m for m, l in data])]
-#             decisions.add(tournament)
-#         # decide get round_tag
-#         elif len(decisions) == 2:
+    match = get_match(matches)
+    return load(match[1])
 
 
 def last_tournament():
-    filepath = os.path.join(CACHE_DIR, LAST_FILE)
-    with open(filepath, 'r') as f:
-        last_seen_filename = f.read().strip()
+    last_seen_pointer = CACHE_DIR / LAST_FILE
+    if not last_seen_pointer.exists():
+        raise SystemExit('| no last-seen tournament — use browser first')
 
-    last_seen_path = os.path.join(CACHE_DIR, last_seen_filename)
-    with open(last_seen_path, 'r') as f:
-        content = f.read()
+    last_seen_filename = last_seen_pointer.read_text().strip()
+    last_seen_path = CACHE_DIR / last_seen_filename
+    if not last_seen_path.exists():
+        raise SystemExit('| cached last-seen tournament missing — use browser')
 
-    data = filter_rounds(content)[1:]
+    content = last_seen_path.read_text()
+    rounds = filter_rounds(content)[1:]
+    if not rounds:
+        raise RuntimeError('no rounds in cached tournament')
 
-    round_tag = get_round(data)
-    data = sorted(filter_matches(round_tag))
+    round_tag = get_round(rounds)
+    matches = sorted(filter_matches(round_tag))
+    if not matches:
+        raise RuntimeError('no matches found in selected round')
 
-    match = get_match(data)
+    match = get_match(matches)
+    return load(match[1])
 
-    content = load(match[1])
-    return content
-
-    exit()
 
 def main_menu():
     options = {
-            'last tournament': last_tournament,
-            'browser': browser
-        }
-    selected = ask(options)
-
-    return options[list(options.keys())[selected]]
+        'last tournament': last_tournament,
+        'browser': browser,
+    }
+    keys = list(options)
+    return options[keys[ask(keys)]]
 
 
 def main():
-    if not os.path.exists(CACHE_DIR):
-        os.makedirs(CACHE_DIR)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    action = main_menu()
+    video_page = action()
+    open_mpv(video_page)
 
-    options_function = main_menu()
-    video_url = options_function()
-
-    open_mpv(video_url)
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)
