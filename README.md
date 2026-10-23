@@ -8,6 +8,7 @@ in [mpv](https://mpv.io/).
 
 - Python 3.8+
 - [mpv](https://mpv.io/) on `PATH`
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp), which mpv uses to play YouTube
 - `beautifulsoup4` (see `requirements.txt`)
 
 ## Install
@@ -30,10 +31,9 @@ quit.
 
 Pages are cached under `~/.cache/sc2links/`. Entries are reused if they were
 written today; otherwise they are refetched. The pointer file `last` records
-the last tournament page you opened so `last tournament` can resume.
+the URL of the last tournament you opened so `last tournament` can resume;
+that page is refetched like any other once its cached copy is a day old.
 
 ## Notes
 
 Only YouTube-embedded VODs play; other embeds are reported but not opened.
-The script sends a desktop browser `User-Agent` because sc2links.com rejects
-default Python/`urllib` agents.
